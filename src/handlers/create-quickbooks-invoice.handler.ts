@@ -2,8 +2,27 @@ import { QuickbooksClient } from "../clients/quickbooks-client.js";
 import { ToolResponse } from "../types/tool-response.js";
 import { formatError } from "../helpers/format-error.js";
 
+/** Header or line link. txn_line_id is the source transaction's line Id (Line.Id). */
+interface LinkedTxnInput {
+  txn_id: string;
+  txn_type: string;
+  txn_line_id?: string;
+}
+
+/**
+ * Map tool linked-transaction entries to QBO LinkedTxn.
+ * TxnLineId is omitted unless the caller names a specific source line.
+ */
+function toLinkedTxn(linked: LinkedTxnInput[]) {
+  return linked.map((lt) => ({
+    TxnId: lt.txn_id,
+    TxnType: lt.txn_type,
+    ...(lt.txn_line_id ? { TxnLineId: lt.txn_line_id } : {}),
+  }));
+}
+
 export interface CreateInvoiceInput {
-  customer_ref: string; // customer id
+  customer_ref: string; // customer id; a sub-customer/job is that job's own Customer Id
   line_items: Array<{
     item_ref: string; // item id
     qty: number;
@@ -11,13 +30,14 @@ export interface CreateInvoiceInput {
     description?: string;
     tax_code_ref?: string; // TaxCode id (non-US) or TAX/NON (US)
     service_date?: string; // YYYY-MM-DD, per-line ServiceDate
+    class_ref?: string; // Class Id when the company tracks class per line
+    linked_txn?: LinkedTxnInput[]; // line-level link, e.g. one estimate line
   }>;
   doc_number?: string;
   txn_date?: string; // YYYY-MM-DD
-  linked_txn?: Array<{
-    txn_id: string;
-    txn_type: string;
-  }>;
+  due_date?: string; // YYYY-MM-DD
+  class_ref?: string; // Class Id when the company tracks class per transaction
+  linked_txn?: LinkedTxnInput[]; // header links; repeat to attach more than one estimate
   global_tax_calculation?: "TaxExcluded" | "TaxInclusive" | "NotApplicable";
   customer_memo?: string; // CustomerMemo (customer-facing message)
   sales_term_ref?: string; // SalesTerm id; falls back to customer default
@@ -28,6 +48,7 @@ export interface CreateInvoiceInput {
 const invoiceFieldTypeMap: Record<string, "string" | "number" | "boolean"> = {
   DocNumber: "string",
   TxnDate: "string",
+  DueDate: "string",
   PrivateNote: "string",
   GlobalTaxCalculation: "string",
   ApplyTaxAfterDiscount: "boolean",
@@ -80,15 +101,16 @@ export async function createQuickbooksInvoice(data: CreateInvoiceInput): Promise
           UnitPrice: l.unit_price,
           TaxCodeRef: l.tax_code_ref ? { value: l.tax_code_ref } : undefined,
           ServiceDate: l.service_date || undefined,
+          ClassRef: l.class_ref ? { value: l.class_ref } : undefined,
         },
+        ...(l.linked_txn ? { LinkedTxn: toLinkedTxn(l.linked_txn) } : {}),
       })),
       DocNumber: data.doc_number,
       TxnDate: data.txn_date,
+      ...(data.due_date ? { DueDate: data.due_date } : {}),
+      ...(data.class_ref ? { ClassRef: { value: data.class_ref } } : {}),
       ...(data.linked_txn && {
-        LinkedTxn: data.linked_txn.map((lt) => ({
-          TxnId: lt.txn_id,
-          TxnType: lt.txn_type,
-        })),
+        LinkedTxn: toLinkedTxn(data.linked_txn),
       }),
       ...(data.customer_memo && { CustomerMemo: { value: data.customer_memo } }),
       ...(data.sales_term_ref && { SalesTermRef: { value: data.sales_term_ref } }),
